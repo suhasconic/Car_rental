@@ -1,167 +1,131 @@
+"""
+Auctions Routes - MongoDB Version
+"""
 from typing import List, Optional
-from uuid import UUID
-from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.models import User, Auction, Bid, Booking, AuctionStatus, BookingStatus
-from app.schemas import (
-    AuctionResponse, AuctionWithDetails, AuctionSummary,
-    BidCreate, BidResponse, BidWithUser
-)
-from app.api.deps import get_current_active_user
-from app.services import auction_engine
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, status, Query, Depends
+from pymongo.database import Database
+from app.core.mongodb import get_db
+from app.core import crud
+from app.api.routes.auth import get_current_user
 
 router = APIRouter(prefix="/auctions", tags=["Auctions"])
 
 
-@router.get("", response_model=List[AuctionSummary])
+def auction_to_response(auction: dict, db: Database, include_bids: bool = True) -> dict:
+    car = crud.get_car_by_id(db, auction.get("car_id"))
+    bids = crud.get_auction_bids(db, auction.get("id")) if include_bids else []
+    
+    # Enrich bids with user info
+    enriched_bids = []
+    for bid in bids:
+        user = crud.get_user_by_id(db, bid.get("user_id"))
+        enriched_bids.append({
+            "id": bid.get("id"),
+            "user_id": bid.get("user_id"),
+            "booking_id": bid.get("booking_id"),
+            "offer_price": float(bid.get("offer_price", 0)),
+            "trust_score_snapshot": float(bid.get("trust_score_snapshot", 0)),
+            "final_score": float(bid.get("final_score")) if bid.get("final_score") else None,
+            "user": {
+                "id": user.get("id"),
+                "name": user.get("name"),
+            } if user else None
+        })
+    
+    return {
+        "id": auction.get("id"),
+        "car_id": auction.get("car_id"),
+        "start_time": auction.get("start_time"),
+        "end_time": auction.get("end_time"),
+        "auction_start": auction.get("auction_start"),
+        "auction_end": auction.get("auction_end"),
+        "status": auction.get("status"),
+        "winner_id": auction.get("winner_id"),
+        "bid_count": len(bids),
+        "car": {
+            "id": car.get("id"),
+            "model": car.get("model"),
+            "number_plate": car.get("number_plate"),
+            "image_url": car.get("image_url"),
+        } if car else None,
+        "bids": enriched_bids
+    }
+
+
+# ============ Routes ============
+
+@router.get("")
 def list_auctions(
     status_filter: Optional[str] = Query(None, alias="status"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """List all auctions"""
-    query = db.query(Auction)
-    
-    if status_filter:
-        query = query.filter(Auction.status == status_filter)
-    
-    auctions = query.order_by(Auction.created_at.desc()).offset(skip).limit(limit).all()
-    
-    result = []
-    for auction in auctions:
-        highest_bid = max((b.offer_price for b in auction.bids), default=None)
-        result.append(AuctionSummary(
-            id=auction.id,
-            car=auction.car,
-            start_time=auction.start_time,
-            end_time=auction.end_time,
-            status=auction.status,
-            bid_count=len(auction.bids),
-            highest_bid=highest_bid,
-            auction_end=auction.auction_end
-        ))
-    
-    return result
+    auctions = crud.get_all_auctions(db, status_filter)
+    return [auction_to_response(a, db) for a in auctions]
 
 
-@router.get("/my", response_model=List[AuctionWithDetails])
+@router.get("/my")
 def get_my_auctions(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db)
 ):
-    """Get auctions the current user is participating in"""
-    auctions = auction_engine.get_user_active_auctions(db, current_user.id)
-    
-    result = []
-    for auction in auctions:
-        auction_data = AuctionWithDetails(
-            id=auction.id,
-            car_id=auction.car_id,
-            start_time=auction.start_time,
-            end_time=auction.end_time,
-            auction_start=auction.auction_start,
-            auction_end=auction.auction_end,
-            status=auction.status,
-            winner_id=auction.winner_id,
-            created_at=auction.created_at,
-            car=auction.car,
-            winner=auction.winner,
-            bids=auction.bids,
-            bid_count=len(auction.bids)
-        )
-        result.append(auction_data)
-    
-    return result
+    """Get auctions user is participating in"""
+    auctions = crud.get_auctions_by_user(db, current_user.get("id"))
+    return [auction_to_response(a, db) for a in auctions]
 
 
-@router.get("/{auction_id}", response_model=AuctionWithDetails)
+@router.get("/{auction_id}")
 def get_auction(
-    auction_id: UUID,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    auction_id: str,
+    db: Database = Depends(get_db)
 ):
-    """Get auction details with all bids"""
-    auction = db.query(Auction).filter(Auction.id == auction_id).first()
+    """Get auction details"""
+    auction = crud.get_auction_by_id(db, auction_id)
     
     if not auction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Auction not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found")
     
-    return AuctionWithDetails(
-        id=auction.id,
-        car_id=auction.car_id,
-        start_time=auction.start_time,
-        end_time=auction.end_time,
-        auction_start=auction.auction_start,
-        auction_end=auction.auction_end,
-        status=auction.status,
-        winner_id=auction.winner_id,
-        created_at=auction.created_at,
-        car=auction.car,
-        winner=auction.winner,
-        bids=auction.bids,
-        bid_count=len(auction.bids)
-    )
+    return auction_to_response(auction, db)
 
 
-@router.post("/{auction_id}/bid", response_model=BidResponse)
+@router.post("/{auction_id}/bid")
 def place_bid(
-    auction_id: UUID,
-    bid_data: BidCreate,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    auction_id: str,
+    offer_price: float = Query(..., gt=0),
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db)
 ):
-    """Place or update a bid on an auction"""
-    auction = db.query(Auction).filter(Auction.id == auction_id).first()
+    """Place or update bid in an auction"""
+    auction = crud.get_auction_by_id(db, auction_id)
     
     if not auction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Auction not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found")
     
-    if auction.status != AuctionStatus.ACTIVE.value:
+    if auction.get("status") != "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This auction is no longer active"
+            detail="Auction is not active"
         )
     
-    # Check if user already has a booking for this auction
-    existing_bid = (
-        db.query(Bid)
-        .filter(Bid.auction_id == auction_id, Bid.user_id == current_user.id)
-        .first()
-    )
+    # Check if user has existing bid
+    existing_bid = crud.get_bid_by_user_auction(db, current_user.get("id"), auction_id)
     
     if existing_bid:
         # Update existing bid
-        existing_bid.offer_price = bid_data.offer_price
-        existing_bid.trust_score_snapshot = current_user.trust_score
+        if offer_price <= float(existing_bid.get("offer_price", 0)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New bid must be higher than your current bid"
+            )
+        crud.update_bid(db, existing_bid.get("id"), {"offer_price": offer_price})
         
-        # Update the associated booking
-        existing_bid.booking.offer_price = bid_data.offer_price
-        
-        db.commit()
-        db.refresh(existing_bid)
-        return existing_bid
+        # Also update the booking
+        crud.update_booking(db, existing_bid.get("booking_id"), {"offer_price": offer_price})
     else:
-        # Create a new booking and bid
-        booking = Booking(
-            user_id=current_user.id,
-            car_id=auction.car_id,
-            start_time=auction.start_time,
-            end_time=auction.end_time,
-            offer_price=bid_data.offer_price,
-            status=BookingStatus.COMPETING.value
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You don't have an active booking in this auction"
         )
-        db.add(booking)
-        db.commit()
-        db.refresh(booking)
-        
-        bid = auction_engine.create_or_update_bid(db, auction, booking, current_user)
-        return bid
+    
+    return {"message": "Bid updated successfully", "new_offer": offer_price}

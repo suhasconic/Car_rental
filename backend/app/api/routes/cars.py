@@ -1,14 +1,49 @@
+"""
+Cars Routes - MongoDB Version
+"""
 from typing import List, Optional
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.models import Car, Availability, AvailabilityStatus
-from app.schemas import CarResponse, CarWithAvailability, AvailabilityResponse
-from app.api.deps import get_optional_user
+from fastapi import APIRouter, HTTPException, status, Query, Depends
+from pydantic import BaseModel
+from pymongo.database import Database
+from app.core.mongodb import get_db
+from app.core import crud
 
 router = APIRouter(prefix="/cars", tags=["Cars"])
 
+
+# ============ Schemas ============
+
+class CarResponse(BaseModel):
+    id: str
+    model: str
+    number_plate: str
+    daily_price: float
+    deposit: float
+    image_url: Optional[str]
+    seats: int
+    transmission: str
+    fuel_type: str
+    description: Optional[str]
+    is_active: bool
+
+
+def car_to_response(car: dict) -> dict:
+    return {
+        "id": car.get("id"),
+        "model": car.get("model"),
+        "number_plate": car.get("number_plate"),
+        "daily_price": float(car.get("daily_price", 0)),
+        "deposit": float(car.get("deposit", 0)),
+        "image_url": car.get("image_url"),
+        "seats": car.get("seats", 5),
+        "transmission": car.get("transmission", "automatic"),
+        "fuel_type": car.get("fuel_type", "petrol"),
+        "description": car.get("description"),
+        "is_active": car.get("is_active", True),
+    }
+
+
+# ============ Routes ============
 
 @router.get("", response_model=List[CarResponse])
 def list_cars(
@@ -18,52 +53,45 @@ def list_cars(
     fuel_type: Optional[str] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    db: Session = Depends(get_db)
+    db: Database = Depends(get_db)
 ):
     """List all active cars with optional filters"""
-    query = db.query(Car).filter(Car.is_active == True)
+    cars = crud.get_all_cars(db, active_only=True)
     
+    # Apply filters
     if transmission:
-        query = query.filter(Car.transmission == transmission)
+        cars = [c for c in cars if c.get("transmission") == transmission]
     if fuel_type:
-        query = query.filter(Car.fuel_type == fuel_type)
+        cars = [c for c in cars if c.get("fuel_type") == fuel_type]
     if min_price is not None:
-        query = query.filter(Car.daily_price >= min_price)
+        cars = [c for c in cars if float(c.get("daily_price", 0)) >= min_price]
     if max_price is not None:
-        query = query.filter(Car.daily_price <= max_price)
+        cars = [c for c in cars if float(c.get("daily_price", 0)) <= max_price]
     
-    return query.offset(skip).limit(limit).all()
+    # Pagination
+    cars = cars[skip:skip + limit]
+    
+    return [car_to_response(car) for car in cars]
 
 
-@router.get("/{car_id}", response_model=CarWithAvailability)
-def get_car(car_id: UUID, db: Session = Depends(get_db)):
-    """Get car details with availability"""
-    car = db.query(Car).filter(Car.id == car_id).first()
+@router.get("/{car_id}", response_model=CarResponse)
+def get_car(car_id: str, db: Database = Depends(get_db)):
+    """Get car details"""
+    car = crud.get_car_by_id(db, car_id)
+    
     if not car:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Car not found"
-        )
-    return car
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Car not found")
+    
+    return car_to_response(car)
 
 
-@router.get("/{car_id}/availability", response_model=List[AvailabilityResponse])
-def get_car_availability(
-    car_id: UUID,
-    status_filter: Optional[str] = Query(None, alias="status"),
-    db: Session = Depends(get_db)
-):
-    """Get availability slots for a car"""
-    car = db.query(Car).filter(Car.id == car_id).first()
+@router.get("/{car_id}/availability")
+def get_car_availability(car_id: str, db: Database = Depends(get_db)):
+    """Get availability for a car (simplified - returns booked periods)"""
+    car = crud.get_car_by_id(db, car_id)
+    
     if not car:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Car not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Car not found")
     
-    query = db.query(Availability).filter(Availability.car_id == car_id)
-    
-    if status_filter:
-        query = query.filter(Availability.status == status_filter)
-    
-    return query.order_by(Availability.start_time).all()
+    # Return empty list for now (could be enhanced to return booked dates)
+    return []

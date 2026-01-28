@@ -155,7 +155,7 @@ export default function CarDetails() {
                         )}
                     </div>
 
-                    {/* Trust Scoring Info */}
+                    {/* Auction Info */}
                     <div className="glass-card bg-gradient-to-br from-amber-900/20 to-orange-900/20 border-amber-500/30">
                         <div className="flex items-start gap-4">
                             <div className="w-12 h-12 rounded-xl bg-amber-500/20 flex items-center justify-center flex-shrink-0">
@@ -165,7 +165,7 @@ export default function CarDetails() {
                                 <h3 className="text-lg font-semibold text-white mb-2">Auction System</h3>
                                 <p className="text-gray-400 text-sm">
                                     If multiple users request this car for overlapping dates, an auction will be triggered.
-                                    Your trust score and offer price determine the winner. Higher trust = better chances!
+                                    The winner is determined based on your offer price and rental history.
                                 </p>
                             </div>
                         </div>
@@ -288,13 +288,7 @@ export default function CarDetails() {
                             </button>
                         </form>
 
-                        {user && (
-                            <div className="mt-4 p-4 rounded-xl bg-primary-500/10 border border-primary-500/30">
-                                <p className="text-xs text-primary-400 text-center">
-                                    Your trust score: <span className="font-mono font-bold">{parseFloat(user.trust_score).toFixed(1)}</span>
-                                </p>
-                            </div>
-                        )}
+
                     </div>
                 </div>
             </div>

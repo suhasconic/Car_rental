@@ -3,7 +3,6 @@ import { Trophy, IndianRupee, Clock, Users, AlertCircle } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { auctionsAPI } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
-import TrustBadge from '../components/TrustBadge';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 export default function MyAuctions() {
@@ -157,7 +156,6 @@ export default function MyAuctions() {
                                                 <div className="flex items-center gap-3">
                                                     <span className="text-gray-400 text-sm">#{index + 1}</span>
                                                     <span className="text-white">{bid.user?.name || 'User'}</span>
-                                                    <TrustBadge score={bid.trust_score_snapshot} size="sm" />
                                                 </div>
                                                 <span className="text-white font-semibold flex items-center gap-1">
                                                     <IndianRupee className="w-4 h-4" />

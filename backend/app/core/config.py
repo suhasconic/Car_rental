@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 import os
 
 
@@ -9,7 +9,11 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
     
-    # Database
+    # MongoDB/Cosmos DB Settings
+    MONGODB_URL: str = "mongodb://localhost:27017"
+    DATABASE_NAME: str = "surya_car_rental"
+    
+    # Legacy PostgreSQL (not used with MongoDB)
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/surya_car_rental"
     
     # JWT Settings
@@ -26,8 +30,12 @@ class Settings(BaseSettings):
     # Auction Settings
     AUCTION_DURATION_HOURS: int = 24  # How long auctions run
     
-    # CORS
-    CORS_ORIGINS: list = ["http://localhost:3000", "http://localhost:5173"]
+    # CORS - Allow Azure Static Web Apps and localhost
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://*.azurestaticapps.net"
+    ]
     
     class Config:
         env_file = ".env"
@@ -35,3 +43,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

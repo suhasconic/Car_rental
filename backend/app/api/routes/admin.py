@@ -1,494 +1,459 @@
+"""
+Admin Routes - MongoDB Version
+"""
 from typing import List, Optional
-from uuid import UUID
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.models import (
-    User, Car, Booking, Auction, Ride, Rating,
-    BookingStatus, AuctionStatus, RideStatus, Availability, AvailabilityStatus
-)
-from app.schemas import (
-    CarCreate, CarUpdate, CarResponse,
-    BookingResponse, BookingWithDetails,
-    RatingCreate, RatingResponse,
-    UserResponse, UserPublic,
-    AuctionWithDetails
-)
-from app.api.deps import get_current_admin
-from app.services import trust_engine, auction_engine
+from fastapi import APIRouter, HTTPException, status, Query, Depends
+from pydantic import BaseModel
+from pymongo.database import Database
+from app.core.mongodb import get_db
+from app.core import crud
+from app.api.routes.auth import get_current_admin
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+# ============ Schemas ============
+
+class CarCreate(BaseModel):
+    model: str
+    number_plate: str
+    daily_price: float
+    deposit: float
+    image_url: Optional[str] = None
+    seats: int = 5
+    transmission: str = "automatic"
+    fuel_type: str = "petrol"
+    description: Optional[str] = None
+
+
+class CarUpdate(BaseModel):
+    model: Optional[str] = None
+    number_plate: Optional[str] = None
+    daily_price: Optional[float] = None
+    deposit: Optional[float] = None
+    image_url: Optional[str] = None
+    seats: Optional[int] = None
+    transmission: Optional[str] = None
+    fuel_type: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class RatingCreate(BaseModel):
+    driving_rating: int
+    damage_flag: bool = False
+    rash_flag: bool = False
+    notes: Optional[str] = None
 
 
 # ============ Dashboard ============
 
 @router.get("/dashboard")
 def get_dashboard(
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Get admin dashboard statistics"""
-    total_users = db.query(User).filter(User.role == "user").count()
-    blocked_users = db.query(User).filter(User.is_blocked == True).count()
-    total_cars = db.query(Car).count()
-    active_cars = db.query(Car).filter(Car.is_active == True).count()
+    """Get admin dashboard stats"""
+    users = crud.get_all_users(db, role="user")
+    cars = crud.get_all_cars(db, active_only=False)
+    bookings = crud.get_all_bookings(db)
+    auctions = crud.get_all_auctions(db)
     
-    pending_bookings = db.query(Booking).filter(
-        Booking.status == BookingStatus.PENDING.value
-    ).count()
-    active_bookings = db.query(Booking).filter(
-        Booking.status == BookingStatus.CONFIRMED.value
-    ).count()
-    
-    active_auctions = db.query(Auction).filter(
-        Auction.status == AuctionStatus.ACTIVE.value
-    ).count()
-    
-    active_rides = db.query(Ride).filter(
-        Ride.status == RideStatus.ACTIVE.value
-    ).count()
+    # Calculate stats
+    pending_bookings = len([b for b in bookings if b.get("status") == "pending"])
+    active_auctions = len([a for a in auctions if a.get("status") == "active"])
+    blocked_users = len([u for u in users if u.get("is_blocked")])
     
     return {
-        "users": {
-            "total": total_users,
-            "blocked": blocked_users,
-            "active": total_users - blocked_users
-        },
-        "cars": {
-            "total": total_cars,
-            "active": active_cars,
-            "inactive": total_cars - active_cars
-        },
-        "bookings": {
-            "pending": pending_bookings,
-            "active": active_bookings
-        },
-        "auctions": {
-            "active": active_auctions
-        },
-        "rides": {
-            "active": active_rides
-        }
+        "total_users": len(users),
+        "total_cars": len(cars),
+        "total_bookings": len(bookings),
+        "pending_bookings": pending_bookings,
+        "active_auctions": active_auctions,
+        "blocked_users": blocked_users,
+        "recent_bookings": bookings[:5] if bookings else []
     }
 
 
 # ============ Car Management ============
 
-@router.post("/cars", response_model=CarResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/cars")
 def add_car(
     car_data: CarCreate,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Add a new car to the fleet"""
-    # Check for duplicate number plate
-    existing = db.query(Car).filter(Car.number_plate == car_data.number_plate).first()
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Car with this number plate already exists"
-        )
-    
-    car = Car(**car_data.model_dump())
-    db.add(car)
-    db.commit()
-    db.refresh(car)
+    """Add a new car"""
+    car = crud.create_car(db, car_data.model_dump())
     return car
 
 
-@router.put("/cars/{car_id}", response_model=CarResponse)
+@router.put("/cars/{car_id}")
 def update_car(
-    car_id: UUID,
+    car_id: str,
     car_data: CarUpdate,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Update car details"""
-    car = db.query(Car).filter(Car.id == car_id).first()
+    car = crud.get_car_by_id(db, car_id)
     if not car:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Car not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Car not found")
     
-    update_data = car_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(car, field, value)
-    
-    car.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(car)
-    return car
+    update_data = {k: v for k, v in car_data.model_dump().items() if v is not None}
+    updated_car = crud.update_car(db, car_id, update_data)
+    return crud.serialize_doc(updated_car) if updated_car else None
 
 
-@router.delete("/cars/{car_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/cars/{car_id}")
 def delete_car(
-    car_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    car_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Remove a car from the fleet"""
-    car = db.query(Car).filter(Car.id == car_id).first()
-    if not car:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Car not found"
-        )
-    
-    # Check for active bookings
-    active_booking = db.query(Booking).filter(
-        Booking.car_id == car_id,
-        Booking.status.in_([BookingStatus.CONFIRMED.value, BookingStatus.PENDING.value])
-    ).first()
-    
-    if active_booking:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete car with active bookings"
-        )
-    
-    db.delete(car)
-    db.commit()
+    """Delete a car"""
+    if not crud.delete_car(db, car_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Car not found")
+    return {"message": "Car deleted successfully"}
 
 
 # ============ Booking Management ============
 
-@router.get("/bookings", response_model=List[BookingWithDetails])
-def list_all_bookings(
+@router.get("/bookings")
+def list_bookings(
     status_filter: Optional[str] = Query(None, alias="status"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """List all bookings (admin view)"""
-    query = db.query(Booking)
+    """List all bookings"""
+    bookings = crud.get_all_bookings(db, status_filter)
     
-    if status_filter:
-        query = query.filter(Booking.status == status_filter)
+    # Enrich with car and user info
+    result = []
+    for booking in bookings:
+        car = crud.get_car_by_id(db, booking.get("car_id"))
+        user = crud.get_user_by_id(db, booking.get("user_id"))
+        
+        result.append({
+            **booking,
+            "car": crud.serialize_doc(car) if car else None,
+            "user": crud.serialize_doc(user) if user else None,
+        })
     
-    return query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
+    return result
 
 
-@router.post("/bookings/{booking_id}/approve", response_model=BookingResponse)
+@router.post("/bookings/{booking_id}/approve")
 def approve_booking(
-    booking_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    booking_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Approve a pending booking"""
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    booking = crud.get_booking_by_id(db, booking_id)
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     
-    if booking.status != BookingStatus.PENDING.value:
+    if booking.get("status") != "pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot approve booking with status: {booking.status}"
+            detail="Only pending bookings can be approved"
         )
     
-    booking.status = BookingStatus.CONFIRMED.value
-    booking.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(booking)
-    return booking
+    crud.update_booking(db, booking_id, {"status": "confirmed"})
+    return {"message": "Booking approved successfully"}
 
 
-@router.post("/bookings/{booking_id}/reject", response_model=BookingResponse)
+@router.post("/bookings/{booking_id}/reject")
 def reject_booking(
-    booking_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    booking_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Reject a pending booking"""
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    booking = crud.get_booking_by_id(db, booking_id)
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     
-    if booking.status not in [BookingStatus.PENDING.value, BookingStatus.COMPETING.value]:
+    if booking.get("status") not in ["pending", "competing"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot reject booking with status: {booking.status}"
+            detail="This booking cannot be rejected"
         )
     
-    booking.status = BookingStatus.REJECTED.value
-    booking.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(booking)
-    return booking
+    crud.update_booking(db, booking_id, {"status": "rejected"})
+    return {"message": "Booking rejected successfully"}
 
 
 # ============ Ride Management ============
 
 @router.post("/bookings/{booking_id}/start-ride")
 def start_ride(
-    booking_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    booking_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Start a ride for a confirmed booking"""
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    booking = crud.get_booking_by_id(db, booking_id)
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     
-    if booking.status != BookingStatus.CONFIRMED.value:
+    if booking.get("status") != "confirmed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only confirmed bookings can start rides"
+            detail="Only confirmed bookings can start a ride"
         )
     
-    if booking.ride:
+    # Check if ride already exists
+    existing_ride = crud.get_ride_by_booking(db, booking_id)
+    if existing_ride:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ride already started"
+            detail="Ride already started for this booking"
         )
     
-    ride = Ride(
-        booking_id=booking_id,
-        status=RideStatus.ACTIVE.value,
-        started_at=datetime.utcnow()
-    )
-    db.add(ride)
-    db.commit()
-    db.refresh(ride)
+    ride = crud.create_ride(db, {"booking_id": booking_id})
+    crud.update_booking(db, booking_id, {"status": "active"})
     
-    return {"message": "Ride started", "ride_id": str(ride.id)}
+    return ride
 
 
 @router.post("/rides/{ride_id}/complete")
 def complete_ride(
-    ride_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    ride_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Complete an active ride"""
-    ride = db.query(Ride).filter(Ride.id == ride_id).first()
+    """Complete a ride"""
+    ride = crud.get_ride_by_id(db, ride_id)
     if not ride:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ride not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ride not found")
     
-    if ride.status != RideStatus.ACTIVE.value:
+    if ride.get("status") != "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only active rides can be completed"
+            detail="Ride is not active"
         )
     
-    ride.status = RideStatus.COMPLETED.value
-    ride.ended_at = datetime.utcnow()
+    crud.update_ride(db, ride_id, {
+        "status": "completed",
+        "ended_at": datetime.utcnow()
+    })
     
     # Update booking status
-    ride.booking.status = BookingStatus.COMPLETED.value
+    crud.update_booking(db, ride.get("booking_id"), {"status": "completed"})
     
-    db.commit()
-    db.refresh(ride)
-    
-    return {"message": "Ride completed", "ride_id": str(ride.id)}
+    return {"message": "Ride completed successfully"}
 
 
-@router.post("/rides/{ride_id}/rate", response_model=RatingResponse)
+@router.post("/rides/{ride_id}/rate")
 def rate_ride(
-    ride_id: UUID,
+    ride_id: str,
     rating_data: RatingCreate,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Rate a completed ride and update user trust score"""
-    ride = db.query(Ride).filter(Ride.id == ride_id).first()
+    """Rate a completed ride"""
+    ride = crud.get_ride_by_id(db, ride_id)
     if not ride:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ride not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ride not found")
     
-    if ride.status not in [RideStatus.COMPLETED.value, RideStatus.DAMAGED.value]:
+    if ride.get("status") != "completed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only completed or damaged rides can be rated"
+            detail="Only completed rides can be rated"
         )
     
-    if ride.rating:
+    # Check if already rated
+    existing_rating = crud.get_rating_by_ride(db, ride_id)
+    if existing_rating:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ride already rated"
         )
     
     # Create rating
-    rating = Rating(
-        ride_id=ride_id,
-        driving_rating=rating_data.driving_rating,
-        damage_flag=rating_data.damage_flag,
-        rash_flag=rating_data.rash_flag,
-        notes=rating_data.notes
-    )
-    db.add(rating)
+    rating = crud.create_rating(db, {
+        "ride_id": ride_id,
+        **rating_data.model_dump()
+    })
     
-    # Update ride status if damaged
-    if rating_data.damage_flag:
-        ride.status = RideStatus.DAMAGED.value
-    
-    db.commit()
-    db.refresh(rating)
-    
-    # Update user trust score
-    user = ride.booking.user
-    trust_engine.update_after_rating(db, user, rating)
+    # Update user stats
+    booking = crud.get_booking_by_id(db, ride.get("booking_id"))
+    if booking:
+        user = crud.get_user_by_id(db, booking.get("user_id"))
+        if user:
+            total_rides = user.get("total_rides", 0) + 1
+            damage_count = user.get("damage_count", 0) + (1 if rating_data.damage_flag else 0)
+            rash_count = user.get("rash_count", 0) + (1 if rating_data.rash_flag else 0)
+            
+            # Calculate new average rating
+            current_avg = float(user.get("avg_rating", 0))
+            new_avg = ((current_avg * (total_rides - 1)) + rating_data.driving_rating) / total_rides
+            
+            # Calculate new trust score
+            trust_score = (
+                (new_avg * 20) +
+                (total_rides * 0.5) -
+                (damage_count * 15) -
+                (rash_count * 10)
+            )
+            trust_score = max(0, trust_score)
+            
+            crud.update_user(db, user.get("id"), {
+                "total_rides": total_rides,
+                "avg_rating": new_avg,
+                "damage_count": damage_count,
+                "rash_count": rash_count,
+                "trust_score": trust_score
+            })
     
     return rating
 
 
 # ============ User Management ============
 
-@router.get("/users", response_model=List[UserResponse])
+@router.get("/users")
 def list_users(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
     blocked_only: bool = Query(False),
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """List all users (admin view)"""
-    query = db.query(User).filter(User.role == "user")
-    
-    if blocked_only:
-        query = query.filter(User.is_blocked == True)
-    
-    return query.order_by(User.trust_score.desc()).offset(skip).limit(limit).all()
+    """List all users"""
+    users = crud.get_all_users(db, role="user", blocked_only=blocked_only)
+    return users
 
 
-@router.get("/users/leaderboard", response_model=List[UserPublic])
-def get_trust_leaderboard(
-    limit: int = Query(10, ge=1, le=50),
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+@router.get("/users/leaderboard")
+def get_leaderboard(
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Get top users by trust score"""
-    return (
-        db.query(User)
-        .filter(User.role == "user", User.is_blocked == False)
-        .order_by(User.trust_score.desc())
-        .limit(limit)
-        .all()
-    )
+    users = crud.get_all_users(db, role="user")
+    # Already sorted by trust score in crud
+    return users[:10]
 
 
 @router.post("/users/{user_id}/block")
 def block_user(
-    user_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    user_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Block a user"""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    if user.role == "admin":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot block admin users"
-        )
-    
-    user.is_blocked = True
-    db.commit()
-    
-    return {"message": "User blocked", "user_id": str(user_id)}
+    if not crud.block_user(db, user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return {"message": "User blocked successfully"}
 
 
 @router.post("/users/{user_id}/unblock")
 def unblock_user(
-    user_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    user_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
     """Unblock a user"""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    user.is_blocked = False
-    db.commit()
-    
-    return {"message": "User unblocked", "user_id": str(user_id)}
+    if not crud.unblock_user(db, user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return {"message": "User unblocked successfully"}
 
 
 # ============ Auction Management ============
 
-@router.get("/auctions", response_model=List[AuctionWithDetails])
-def list_all_auctions(
+@router.get("/auctions")
+def list_auctions(
     status_filter: Optional[str] = Query(None, alias="status"),
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """List all auctions (admin view)"""
-    query = db.query(Auction)
+    """List all auctions"""
+    auctions = crud.get_all_auctions(db, status_filter)
     
-    if status_filter:
-        query = query.filter(Auction.status == status_filter)
+    # Enrich with car info and bids
+    result = []
+    for auction in auctions:
+        car = crud.get_car_by_id(db, auction.get("car_id"))
+        bids = crud.get_auction_bids(db, auction.get("id"))
+        
+        # Enrich bids with user info
+        enriched_bids = []
+        for bid in bids:
+            user = crud.get_user_by_id(db, bid.get("user_id"))
+            enriched_bids.append({
+                **crud.serialize_doc(bid),
+                "user": crud.serialize_doc(user) if user else None,
+            })
+        
+        winner = None
+        if auction.get("winner_id"):
+            winner = crud.get_user_by_id(db, auction.get("winner_id"))
+        
+        result.append({
+            **auction,
+            "car": crud.serialize_doc(car) if car else None,
+            "bids": enriched_bids,
+            "winner": crud.serialize_doc(winner) if winner else None,
+        })
     
-    auctions = query.order_by(Auction.created_at.desc()).all()
-    
-    return [
-        AuctionWithDetails(
-            id=a.id,
-            car_id=a.car_id,
-            start_time=a.start_time,
-            end_time=a.end_time,
-            auction_start=a.auction_start,
-            auction_end=a.auction_end,
-            status=a.status,
-            winner_id=a.winner_id,
-            created_at=a.created_at,
-            car=a.car,
-            winner=a.winner,
-            bids=a.bids,
-            bid_count=len(a.bids)
-        )
-        for a in auctions
-    ]
+    return result
 
 
 @router.post("/auctions/{auction_id}/close")
 def close_auction(
-    auction_id: UUID,
-    admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    auction_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db)
 ):
-    """Manually close an auction and determine winner"""
-    auction = db.query(Auction).filter(Auction.id == auction_id).first()
+    """Close an auction and determine winner"""
+    auction = crud.get_auction_by_id(db, auction_id)
     if not auction:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Auction not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auction not found")
     
-    if auction.status != AuctionStatus.ACTIVE.value:
+    if auction.get("status") != "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Auction is already closed"
+            detail="Auction is not active"
         )
     
-    winning_booking = auction_engine.close_auction(db, auction)
+    # Get all bids and calculate final scores
+    bids = crud.get_auction_bids(db, auction_id)
+    if not bids:
+        crud.update_auction(db, auction_id, {"status": "cancelled"})
+        return {"message": "Auction cancelled - no bids"}
     
+    # Calculate final scores (trust-weighted)
+    for bid in bids:
+        trust = float(bid.get("trust_score_snapshot", 0))
+        offer = float(bid.get("offer_price", 0))
+        
+        # Trust weight: higher trust = higher bonus multiplier
+        trust_weight = 1 + (trust / 100)  # e.g., trust 80 = 1.8x multiplier
+        final_score = offer * trust_weight
+        
+        crud.update_bid(db, bid.get("id"), {"final_score": final_score})
+    
+    # Find winner (highest final score)
+    bids = crud.get_auction_bids(db, auction_id)  # Refresh
+    winner_bid = max(bids, key=lambda b: float(b.get("final_score", 0)))
+    
+    # Update auction
+    crud.update_auction(db, auction_id, {
+        "status": "closed",
+        "winner_id": winner_bid.get("user_id")
+    })
+    
+    # Update bookings
+    for bid in bids:
+        if bid.get("id") == winner_bid.get("id"):
+            crud.update_booking(db, bid.get("booking_id"), {"status": "confirmed"})
+        else:
+            crud.update_booking(db, bid.get("booking_id"), {"status": "lost_auction"})
+    
+    winner = crud.get_user_by_id(db, winner_bid.get("user_id"))
     return {
         "message": "Auction closed",
-        "winner_id": str(auction.winner_id) if auction.winner_id else None,
-        "winning_booking_id": str(winning_booking.id) if winning_booking else None
+        "winner": crud.serialize_doc(winner) if winner else None,
+        "winning_score": winner_bid.get("final_score")
     }

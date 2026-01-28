@@ -43,7 +43,7 @@ node_modules/
 npm-debug.log
 
 # Build output
-frontend/dist/
+#frontend/dist/
 
 # Docker volumes
 postgres_data/

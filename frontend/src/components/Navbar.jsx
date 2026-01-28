@@ -5,7 +5,6 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import useAuthStore from '../store/authStore';
-import TrustBadge from './TrustBadge';
 
 export default function Navbar() {
     const [isOpen, setIsOpen] = useState(false);
@@ -76,7 +75,7 @@ export default function Navbar() {
                                     </div>
                                     <div className="text-left">
                                         <p className="text-white font-medium text-sm">{user?.name}</p>
-                                        {!isAdmin && <TrustBadge score={user?.trust_score} size="sm" />}
+                                        {isAdmin && <span className="text-xs text-primary-400">Admin</span>}
                                     </div>
                                     <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
                                 </button>
