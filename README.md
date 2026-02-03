@@ -64,6 +64,27 @@ Surya Car Rental is a full-stack marketplace where:
 - **Docker Compose** - Multi-container orchestration
 - **Nginx** - Production web server
 
+## ☁️ Cloud Deployment
+
+This application can be deployed to **Azure**, **AWS**, or **GCP**. 
+
+### Quick Deploy to Azure
+```bash
+chmod +x deploy_azure.sh
+./deploy_azure.sh
+```
+
+### Full Deployment Guide
+For detailed step-by-step instructions for all cloud providers, see:
+
+**📖 [DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete guide covering:
+- Azure (Static Web Apps + App Service + Cosmos DB)
+- AWS (Amplify + Elastic Beanstalk + DocumentDB)
+- GCP (Firebase + Cloud Run + MongoDB Atlas)
+- Environment configuration
+- Troubleshooting
+- Security best practices
+
 ## 🚀 Quick Start
 
 ### Prerequisites
