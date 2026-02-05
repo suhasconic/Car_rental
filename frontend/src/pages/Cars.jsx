@@ -9,6 +9,7 @@ export default function Cars() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [showFilters, setShowFilters] = useState(false);
+    const [selectedCategory, setSelectedCategory] = useState('all');
 
     const [filters, setFilters] = useState({
         transmission: '',
@@ -16,6 +17,14 @@ export default function Cars() {
         minPrice: '',
         maxPrice: '',
     });
+
+    const categories = [
+        { id: 'all', label: 'All Cars' },
+        { id: 'hatchback', label: 'Hatchback' },
+        { id: 'sedan', label: 'Sedan' },
+        { id: 'suv', label: 'SUV' },
+        { id: 'luxury', label: 'Luxury' }
+    ];
 
     useEffect(() => {
         fetchCars();
@@ -80,6 +89,24 @@ export default function Cars() {
                             <span className="w-2 h-2 rounded-full bg-primary-500" />
                         )}
                     </button>
+                </div>
+            </div>
+
+            {/* Category Tabs */}
+            <div className="mb-8 overflow-x-auto">
+                <div className="flex gap-3 min-w-max">
+                    {categories.map((category) => (
+                        <button
+                            key={category.id}
+                            onClick={() => setSelectedCategory(category.id)}
+                            className={`px-6 py-3 rounded-xl font-semibold transition-all ${selectedCategory === category.id
+                                ? 'bg-gradient-to-r from-primary-500 to-primary-700 text-white shadow-lg shadow-primary-500/30'
+                                : 'glass-card text-gray-400 hover:text-white hover:bg-white/10'
+                                }`}
+                        >
+                            {category.label}
+                        </button>
+                    ))}
                 </div>
             </div>
 
@@ -179,9 +206,28 @@ export default function Cars() {
                 </div>
             ) : (
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {cars.map((car) => (
-                        <CarCard key={car.id} car={car} />
-                    ))}
+                    {cars
+                        .filter(car => {
+                            if (selectedCategory === 'all') return true;
+                            // Filter by category based on car model/type
+                            const model = car.model.toLowerCase();
+                            if (selectedCategory === 'hatchback') {
+                                return model.includes('swift') || model.includes('altroz') || model.includes('i20');
+                            }
+                            if (selectedCategory === 'sedan') {
+                                return model.includes('dzire') || model.includes('city') || model.includes('verna');
+                            }
+                            if (selectedCategory === 'suv') {
+                                return model.includes('creta') || model.includes('seltos') || model.includes('thar') || model.includes('innova');
+                            }
+                            if (selectedCategory === 'luxury') {
+                                return model.includes('fortuner') || model.includes('crysta');
+                            }
+                            return true;
+                        })
+                        .map((car) => (
+                            <CarCard key={car.id} car={car} />
+                        ))}
                 </div>
             )}
         </div>

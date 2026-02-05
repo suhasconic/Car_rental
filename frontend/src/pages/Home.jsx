@@ -3,6 +3,10 @@ import {
     Car, Shield, Trophy, Star, ArrowRight,
     Zap, Lock, TrendingUp, ChevronRight
 } from 'lucide-react';
+import HowItWorks from '../components/HowItWorks';
+import Services from '../components/Services';
+import FAQ from '../components/FAQ';
+import Contact from '../components/Contact';
 
 export default function Home() {
     const features = [
@@ -125,6 +129,12 @@ export default function Home() {
             </section>
 
             {/* How It Works Section */}
+            <HowItWorks />
+
+            {/* Services Section */}
+            <Services />
+
+            {/* Trust Scoring Section */}
             <section className="py-20 relative">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="text-center mb-16">
@@ -187,6 +197,12 @@ export default function Home() {
                     </div>
                 </div>
             </section>
+
+            {/* FAQ Section */}
+            <FAQ />
+
+            {/* Contact Section */}
+            <Contact />
 
             {/* CTA Section */}
             <section className="py-20 relative">
